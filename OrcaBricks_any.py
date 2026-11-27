@@ -8,6 +8,9 @@
 # author = "Sonny Gilbert"
 # version = "0.6.6"
 # ///
+
+# Turn prime-tower purge into a stack of printable bricks.
+
 import json
 import math
 import os
@@ -54,13 +57,14 @@ DECK_T = 1.0
 STUD_H = 1.7
 STUD_TIP_RADIUS = 0.2
 EDGE = 0.1
-SOCKET_D = 2.0
+SOCKET_D = 2.0  # Leave this much room for the studs underneath.
 
 FILL_MIN = 0.15
 SPACER_MIN = 0.25
 IFACE_D = 0.5
 SCAFFOLD_D = 0.15
 SOCK_MIN = 0.3
+# Put extra purge into hidden lines so the fit surfaces keep their shape.
 INTERNAL_KINDS = {"fill", "socket", "spacer", "scaffold"}
 LINK_MAX = 2.5
 NO_LINK = {"stud", "tube", "pin", "hole"}
@@ -269,6 +273,7 @@ class Tracker:
             else:
                 length = math.hypot(ex - sx, ey - sy)
             self.x, self.y, self.z = ex, ey, ez
+            # Count the filament that undoes a retraction separately from what gets printed.
             eff = refill = 0.0
             if de < 0:
                 self.retract += de
@@ -302,6 +307,7 @@ class Brick:
                 for i in range(self.nx) for j in range(self.ny)]
 
     def top_studs(self):
+        # A slope only has studs on the raised row.
         if self.shape == "slope":
             if self.axis == "y":
                 return [(sx, sy) for (sx, sy) in self.studs() if sy > self.y + PITCH]
@@ -362,6 +368,7 @@ def order_paths(paths):
                 lines_.append(q)
             else:
                 other.append(q)
+        # Start with a long purge line, then take the shortest hops between paths.
         if len(lines_) > 2 and any(len(q.pts) == 2 for q in lines_):
             first = max((q for q in lines_ if len(q.pts) == 2),
                         key=lambda q: math.hypot(q.pts[1][0] - q.pts[0][0], q.pts[1][1] - q.pts[0][1]))
@@ -390,6 +397,7 @@ def order_paths(paths):
                 cx, cy = q.pts[-1]
             lines_ = chain
         if holes:
+            # Print the walls and grid first so the hole rings have lines to land against.
             out += outer + lines_ + other + holes
         else:
             out += lines_ + other + outer
@@ -453,6 +461,7 @@ def zigzag(x0, y0, x1, y1, w, along_y, z, t, kind):
 
 
 def clipped_lines(x0, y0, x1, y1, w, along_y, holes, z, t, kind, bead_w=None, aligned=()):
+    # Trim straight fill lines around the circular openings.
     paths = []
     if x1 - x0 < 0.3 or y1 - y0 < 0.3:
         return paths
@@ -532,8 +541,8 @@ def pack_bricks(w: float, h: float, sizes, gap: float):
 @dataclass
 class LayerSpec:
     idx: int
-    z: float
-    t: float
+    z: float  # Nozzle height for the brick paths.
+    t: float  # Thickness of the printed layer.
     region: str
     deck_n: int
     first: bool
@@ -542,7 +551,7 @@ class LayerSpec:
     spacer_z: float
     elem: int
     kind: str
-    v: float = 0.0
+    v: float = 0.0  # Halfway through this layer, measured from the brick base.
     spacer_top: bool = False
     spacer_last: bool = False
     spacer_ring_clearance: float | None = None
@@ -551,6 +560,7 @@ class LayerSpec:
 
 
 def plan_layers(layers, last_tower, max_layer, settings, gap, layer_cost=None):
+    # Fit each brick's body, top and studs to the available slicer layers.
     allow_plates = settings["allow_plates"]
     notes = []
     specs = {}
@@ -572,6 +582,7 @@ def plan_layers(layers, last_tower, max_layer, settings, gap, layer_cost=None):
                 z = top + t
                 v_next_mid = (top + z) / 2 - base
                 if z > Z + 1e-6 and n_in_elem >= 2 and v_next_mid < H - DECK_T - t:
+                    # Thin the body layers slightly to catch up after a breakaway gap.
                     z = max(Z, top + t * 0.9)
             mid = (max(top, base) + z) / 2 - base
             if mid >= H + stud_h:
@@ -585,6 +596,7 @@ def plan_layers(layers, last_tower, max_layer, settings, gap, layer_cost=None):
             spec = LayerSpec(i, z, z - max(top, base) if n_in_elem else (z if i == 0 else t),
                              region, deck_n, i == 0, n_in_elem == 0, False, 0.0, -1, "", mid)
             if region == "studs":
+                # Round just the tips so the studs start into the sockets more easily.
                 rise = max(0.0, min(STUD_TIP_RADIUS, mid - (H + stud_h - STUD_TIP_RADIUS)))
                 spec.stud_tip_inset = STUD_TIP_RADIUS - math.sqrt(STUD_TIP_RADIUS ** 2 - rise ** 2)
             out.append(spec)
@@ -624,6 +636,7 @@ def plan_layers(layers, last_tower, max_layer, settings, gap, layer_cost=None):
             last.spacer_last = True
             last.spacer_cap = settings.get("solid_spacer_cap", False) and gap > 0
             if gap >= last.t - 1e-6:
+                # Step the spacer rings inward as they rise so each has support.
                 width = settings["line_width"]
                 inner = max(settings["stud_clearance"], 0.1)
                 outer = min(settings["spacer_clearance"], PITCH / 2 - EDGE - settings["stud_diameter"] / 2 - width)
@@ -635,6 +648,7 @@ def plan_layers(layers, last_tower, max_layer, settings, gap, layer_cost=None):
         return kind, end, sp
 
     def next_base(sp):
+        # Leave a gap on each side of the spacer and room for the optional cap.
         last = sp[-1]
         return last.z + 2 * gap + (last.t if last.spacer_cap else 0.0)
 
@@ -656,6 +670,7 @@ def plan_layers(layers, last_tower, max_layer, settings, gap, layer_cost=None):
             if settings["allow_tiles"]:
                 heights.append(("tile", PLATE_H, 0.0))
 
+        # Keep a few promising heights in play. Each choice shifts the next joint.
         pending = {0: {0.0: ((0.0, 0.0, 0, 0), None)}}
         best = None
         for i in range(last_tower + 1):
@@ -707,6 +722,7 @@ def layer_paths(spec: LayerSpec, bricks: list[Brick], st: dict, style=("tubes", 
     socket, fill = style[0], style[1]
     sock_d = style[2] if len(style) > 2 else 1.0
 
+    # Start the purge on throwaway scaffold when there is room for it.
     if scaffold and not spec.spacer and spec.region != "studs":
         paths += scaffold_paths(scaffold, z, t, SCAFFOLD_D, w, spec.idx % 2 == 0)
 
@@ -733,6 +749,7 @@ def layer_paths(spec: LayerSpec, bricks: list[Brick], st: dict, style=("tubes", 
             ix0, iy0, ix1, iy1 = x0 + wall + w * 0.25, y0 + wall + w * 0.25, x1 - wall - w * 0.25, y1 - wall - w * 0.25
             along = spec.idx % 2 == 0
             if spec.v < SOCKET_D and socket == "holes":
+                # Cut stud holes into a grid when the purge needs more room.
                 hr = stud_r + c
                 studs_in = [(sx, sy) for (sx, sy) in b.studs() if x0 < sx < x1 and y0 < sy < y1]
                 for (sx, sy) in studs_in:
@@ -764,10 +781,12 @@ def layer_paths(spec: LayerSpec, bricks: list[Brick], st: dict, style=("tubes", 
                         paths += ring_paths(b.x + PITCH * i, b.y + PITCH / 2, 0, r, w, z, t, "pin")
                         holes.append((b.x + PITCH * i, b.y + PITCH / 2, r + w * 0.3))
             if spec.v >= SOCKET_D and fill > 0:
+                # Start the extra fill above the space the studs need.
                 paths += clipped_lines(ix0, iy0, ix1, iy1, w / fill, along, holes, z, t, "fill", bead_w=w)
         elif spec.region == "deck":
             d = w / 2
             paths.append(Path(rect_loop(x0 + d, y0 + d, x1 - d, y1 - d), z, w, t, "deck_edge"))
+            # Run the first top layer along the short side so it has less to bridge.
             short_is_y = (x1 - x0) >= (y1 - y0)
             along_y = short_is_y if spec.deck_n % 2 == 0 else not short_is_y
             paths += zigzag(x0 + w, y0 + w, x1 - w, y1 - w, w, along_y, z, t, "deck")
@@ -815,6 +834,7 @@ def layer_paths(spec: LayerSpec, bricks: list[Brick], st: dict, style=("tubes", 
         cap_z = sz + t
         for (rx0, ry0, rx1, ry1) in [b.outer for b in bricks] + [s.outer for s in scaffold]:
             x0, y0, x1, y1 = rx0 + w, ry0 + w, rx1 - w, ry1 - w
+            # Put a grid line under each tube or pin on the brick above.
             aligned = sorted({x if along_y else y for x, y in socket_support
                               if x0 <= x <= x1 and y0 <= y <= y1}) if spec.spacer_last else ()
             sp_paths += clipped_lines(x0, y0, x1, y1, w / sd, along_y, holes, sz, t,
@@ -823,9 +843,11 @@ def layer_paths(spec: LayerSpec, bricks: list[Brick], st: dict, style=("tubes", 
             if spec.spacer_cap:
                 cap_paths.append(Path(rect_loop(rx0 + d, ry0 + d, rx1 - d, ry1 - d),
                                       cap_z, w, t, "spacer_cap"))
+                # Cross the grid underneath so the cap has support along each line.
                 cap_paths += zigzag(x0, y0, x1, y1, w, not along_y, cap_z, t, "spacer_cap")
         for q in sp_paths:
             q.grp = -2
+        # Keep the cap separate so the sorter finishes the lower grid first.
         for q in cap_paths:
             q.grp = -3
         paths += sp_paths + cap_paths
@@ -904,6 +926,7 @@ def bead_area(w, t):
 class LayerJob:
 
     def __init__(self, paths, fil_area, k=1.0):
+        # Keep a queue of paths so each purge move can use the next bit of a path.
         self.segs = []
         self.meta = [(p.kind, p.grp) for p in paths]
         self.last_pid = None
@@ -1017,6 +1040,7 @@ class Emitter:
         self.ensure_abs()
         self.last_seg = None
         if self.need_entry:
+            # Get above the stack before moving over to the first path.
             if (not same_xy and not self.retracted and not self.stream_ret and self._r("len", 0.8) > 0
                     and (not self.xy_known
                          or math.hypot(x - self.x, y - self.y) > self._r("min_travel", 1.0))):
@@ -1159,6 +1183,7 @@ def scaf_rects(lower, upper):
 
 
 def choose_brick_count(bricks, specs, by_layer, block_moves, last_tower, st, fil_area, tight=1.0):
+    # Treat the stock tower's purge, fill and brim as the filament budget.
     budget = sum(mv["eff"] for mv in block_moves.values() if mv["has_xy"] and not mv["custom"])
     sample = {}
 
@@ -1178,6 +1203,7 @@ def choose_brick_count(bricks, specs, by_layer, block_moves, last_tower, st, fil
         c_hi = LayerJob(full, fil_area, st["max_hidden_flow"]).capacity() / max(s.t, 1e-6)
         return c_lo, max(c_hi, c_lo)
 
+    # Reuse the measurements for bricks of the same size and layer type.
     table = {}
 
     def piece_caps(nx, ny, key):
@@ -1199,6 +1225,7 @@ def choose_brick_count(bricks, specs, by_layer, block_moves, last_tower, st, fil
     opts = sorted({o for (a, b) in parse_sizes(st["brick_sizes"]) for o in ((a, b), (b, a))})
     ref = next((k for k in sample if k[0] == "socket" and not k[3]), None) or \
         next((k for k in sample if not k[3]), None) or next(iter(sample))
+    # Shrink or drop one piece at a time, keeping the same slots across levels.
     state = [(b.nx, b.ny) for b in bricks]
     seq = [list(state)]
     while any(state):
@@ -1289,6 +1316,7 @@ def choose_brick_count(bricks, specs, by_layer, block_moves, last_tower, st, fil
             chosen = counts
             break
     if chosen is None:
+        # Try swapping the lowest-purge levels for scaffold to save filament.
         chosen = list(need_n)
         purge_of = {e: sum(sum(b.e_in for b in by_layer.get(li, [])) for li in by_elem.get(e, []))
                     for e in range(n_el)}
@@ -1385,6 +1413,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
     if MARK in text:
         raise Skip("file was already processed")
 
+    # Read the original G-code before deciding what to replace.
     cfg = {}
     for ln in lines:
         if ln.startswith(";") and "=" in ln:
@@ -1555,6 +1584,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
         fil_d = [1.75]
     fil_area = math.pi * (fil_d[0] / 2) ** 2
 
+    # Measure the tower from its extrusion moves so the bricks use the same area.
     if not tower_pts:
         tower_pts = [(block_moves[i]["ex"], block_moves[i]["ey"]) for i in block_moves
                      if block_moves[i]["de"] > 0 and block_moves[i]["has_xy"] and not block_moves[i]["custom"]
@@ -1586,6 +1616,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
     has_cp = bool(cp_lines)
 
     def classify(mv):
+        # Keep printer commands and recover the purge separately from tower fill.
         if mv["custom"]:
             return "keep"
         if mv["has_xy"]:
@@ -1621,6 +1652,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
             b.end = last_rel + 1
         b.empty = last_rel is None
     blocks = [b for b in blocks if not b.empty]
+    # Some slicers put the move to the tower just before its start tag.
     prev_end = 0
     for b in sorted(blocks, key=lambda q: q.start):
         k, first, n = b.start - 1, b.start, 0
@@ -1638,6 +1670,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
     n_layers = len(zs)
     max_layer = n_layers - 1 if st["finish_last_brick"] else last_tower
     min_t = min(t for (_, t) in zs[: last_tower + 1]) if zs else 0.2
+    # Scale down the breakaway gap on finer layers.
     gap = max(0.0, min(st["breakaway_gap"], 1.5 * min_t))
 
     by_layer = {}
@@ -1672,6 +1705,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
         return max(0.0, need - high), max(need, low)
 
     def solve_density(spec, pieces, socket, which, lo, scaf, socket_support=()):
+        # Use the lightest grid that can take this layer's purge.
         need = need_of(spec.idx)
         build = {"fill": lambda d: layer_paths(spec, pieces, st, (socket, d), 1.0, scaf),
                  "spacer": lambda d: layer_paths(spec, pieces, st, (socket, 0.0), d, scaf, socket_support),
@@ -1724,6 +1758,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
                     paths = layer_paths(spec, pieces, st, (socket, 0.0), IFACE_D if spec.spacer_top else SPACER_MIN, scaf)
                 res[li] = paths
             if any(d > 0 for d in dens.values()):
+                # Give every filled layer a light grid underneath to build on.
                 for li, d in dens.items():
                     if d < FILL_MIN:
                         res[li] = layer_paths(specs[li], pieces, st, (socket, FILL_MIN), 1.0, scaf)
@@ -1759,6 +1794,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
             if cells and e_idx >= first_round and (e_idx == top_e or rounds_above):
                 pieces = theme_pieces(cells, "round")
                 footprints = {(b.x, b.y, b.nx, b.ny) for b in pieces}
+                # Keep round pieces above matching footprints so they have support.
                 if rounds_above <= footprints:
                     plan = plan_element(e_idx, pieces, socket_support)
                     if plan[2][0] <= st["max_hidden_flow"]:
@@ -1774,6 +1810,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
             chosen = []
             rounds_above = set()
             socket_support = set()
+            # Plan from the top down so each brick tells the spacer below where to support it.
             for e_idx in reversed(range(n_el)):
                 theme, pieces, planned, rounds_above = choose_shape(e_idx, rounds_above, socket_support)
                 chosen.append((theme, len(pieces), planned))
@@ -1793,6 +1830,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
                 elements[e_idx]["pieces"] = piece_count
                 if k_e[0] > worst[0]:
                     worst = k_e
+            # Check the actual filament use and try a tighter layout if needed.
             used = {li: LayerJob(p, fil_area, k).capacity() for li, (p, k) in jobs.items()}
             total = sum(used.values())
             allowed = budget_e + sum(c for li, c in used.items() if li > last_tower)
@@ -1855,6 +1893,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
     if unmapped:
         raise Skip(f"tower layers {unmapped[:5]} fall outside the brick plan")
 
+    # Finish the top brick on model layers that no longer have a purge tower.
     inject_at = {}
     for li in specs:
         if li not in by_layer:
@@ -1867,6 +1906,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
         if b.layer in specs:
             last_block_of_layer[b.layer] = b
 
+    # Swap the tower moves for brick paths and keep the slicer's tool changes.
     out: list[str] = []
     em = Emitter(out, st)
     orig = Tracker(per_tool)
@@ -1893,6 +1933,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
     def at_brick(job):
         if job is None or job.done() or not em.need_entry:
             return
+        # Send the nozzle to the new tower before it primes.
         _, x0, y0, x1, y1, _, _, z = job.segs[job.si]
         em.goto_start(x0 + (x1 - x0) * job.frac, y0 + (y1 - y0) * job.frac, z)
 
@@ -2081,6 +2122,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
                         if mv["refill"] > 1e-9:
                             em.e_only(mv["refill"], 1800)
                     elif action == "pour":
+                        # Use the slicer's purge rate to work out the speed along the brick paths.
                         t_min = mv["len"] / max(mv["f"], 1.0)
                         rate = mv["de"] / t_min if t_min > 0 else 2400.0
                         if mv["refill"] > 1e-9:
@@ -2116,6 +2158,7 @@ def process_gcode(text: str, raw_settings: dict | None = None, config_lookup=Non
                     em.new_e = orig.e
                     continue
                 if cmd and cmd.letter == "T":
+                    # The tool change can move the head. Lift clear and find our position again after it.
                     em.tool = cmd.num
                     safe = em.tower_top + st["z_lift"]
                     if em.z < safe - 1e-6:
@@ -2337,6 +2380,7 @@ figure svg{{width:100%;height:auto;display:block}}figcaption{{margin-top:6px}}sm
 
 
 def guard_pass(out_lines, rect, st):
+    # Track the actual Z and the slicer's Z separately while crossing the tower.
     res = []
     trk = Tracker()
     phys_z = 0.0
@@ -2647,6 +2691,7 @@ def _run_on_file(path: str, raw_cfg: dict | None, config_lookup=None):
             return True, m, {"short": m, "preview_html": ""}
         m = f"Brick tower NOT built: {e}. The normal prime tower was kept."
         return False, m, {"short": m, "preview_html": ""}
+    # Replace the export once the full rewrite is ready.
     tmp = path + ".bricktmp"
     with open(tmp, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
         f.write(new_text)
@@ -2682,6 +2727,7 @@ except ImportError:
     orca = None
 
 if orca is not None:
+    # The settings window can reopen the last preview during this OrcaSlicer session.
     _last_brick_preview: tuple[str, list[tuple[int, list[str]]]] | None = None
 
     class BrickPrimeTower(orca.slicing.SlicingPipelineCapabilityBase):
